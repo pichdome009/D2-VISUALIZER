@@ -1,4 +1,6 @@
-import React, { useRef, useState } from 'react'
+import React, { useRef } from 'react'
+import { useShallow } from 'zustand/react/shallow'
+import { usePanelResize } from '@/components/ui/usePanelResize'
 import {
   Move,
   Palette,
@@ -23,9 +25,14 @@ export const InspectorPanel: React.FC = () => {
     setInspectorWidth,
     selectedLayer,
     setSelectedLayer,
-  } = useUIStore()
-  const isDraggingRef = useRef(false)
-  const [isResizing, setIsResizing] = useState(false)
+  } = useUIStore(useShallow(s => ({
+    isInspectorCollapsed: s.isInspectorCollapsed, toggleInspector: s.toggleInspector,
+    inspectorWidth: s.inspectorWidth, setInspectorWidth: s.setInspectorWidth,
+    selectedLayer: s.selectedLayer, setSelectedLayer: s.setSelectedLayer,
+  })))
+  const { panelRef, onPointerDown, onKeyDown } = usePanelResize({
+    value: inspectorWidth, min: 260, max: 400, axis: 'x', direction: -1, commit: setInspectorWidth,
+  }, isInspectorCollapsed)
   const expandButtonRef = useRef<HTMLButtonElement>(null)
   const collapseButtonRef = useRef<HTMLButtonElement>(null)
   const handleToggleInspector = () => {
@@ -33,30 +40,6 @@ export const InspectorPanel: React.FC = () => {
     requestAnimationFrame(() => {
       (isInspectorCollapsed ? collapseButtonRef : expandButtonRef).current?.focus()
     })
-  }
-
-  const handleResizeMouseDown = (e: React.MouseEvent) => {
-    e.preventDefault()
-    isDraggingRef.current = true
-    setIsResizing(true)
-    const startX = e.clientX
-    const startW = inspectorWidth
-
-    const handleMouseMove = (ev: MouseEvent) => {
-      if (!isDraggingRef.current) return
-      const deltaX = startX - ev.clientX
-      setInspectorWidth(startW + deltaX)
-    }
-
-    const handleMouseUp = () => {
-      isDraggingRef.current = false
-      setIsResizing(false)
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('mouseup', handleMouseUp)
-    }
-
-    window.addEventListener('mousemove', handleMouseMove)
-    window.addEventListener('mouseup', handleMouseUp)
   }
 
   const {
@@ -87,8 +70,8 @@ export const InspectorPanel: React.FC = () => {
   ]
 
   return (
-    <div data-inspector-panel data-resizing={isResizing}
-      style={{ width: isInspectorCollapsed ? 40 : inspectorWidth + 4 }}
+    <div data-inspector-panel ref={panelRef}
+      style={{ '--panel-size': `${inspectorWidth}px`, width: isInspectorCollapsed ? 40 : 'calc(var(--panel-size) + 4px)' } as React.CSSProperties}
       className="panel-size-transition h-full select-none shrink-0 z-20 border-l border-d2-border relative overflow-hidden bg-d2-surface">
       <aside aria-hidden={!isInspectorCollapsed} ref={node => { if (node) node.inert = !isInspectorCollapsed }}
         className={`panel-fade absolute inset-0 w-10 h-full flex flex-col items-center py-2 ${isInspectorCollapsed ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
@@ -108,16 +91,18 @@ export const InspectorPanel: React.FC = () => {
         </div>
       </aside>
       <div aria-hidden={isInspectorCollapsed} ref={node => { if (node) node.inert = isInspectorCollapsed }}
-        style={{ width: inspectorWidth + 4 }}
+        style={{ width: 'calc(var(--panel-size) + 4px)' }}
         className={`panel-fade flex h-full ${isInspectorCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
       {/* Vertical Resize Splitter */}
       <div
-        onMouseDown={handleResizeMouseDown}
-        className="w-1 h-full cursor-col-resize z-30 bg-d2-border hover:bg-d2-accent active:bg-d2-accent transition-colors"
+        onPointerDown={onPointerDown} onKeyDown={onKeyDown}
+        role="separator" tabIndex={isInspectorCollapsed ? -1 : 0} aria-label="Resize inspector"
+        aria-orientation="vertical" aria-valuemin={260} aria-valuemax={400} aria-valuenow={inspectorWidth}
+        className="w-1 h-full shrink-0 touch-none cursor-col-resize z-30 bg-d2-border hover:bg-d2-accent active:bg-d2-accent transition-colors"
         title="Drag to resize inspector"
       />
       <aside
-        style={{ width: `${inspectorWidth}px` }}
+        style={{ width: 'var(--panel-size)' }}
         className="h-full bg-d2-surface flex flex-col select-none overflow-hidden"
       >
       {/* Header */}

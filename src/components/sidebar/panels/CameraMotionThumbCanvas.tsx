@@ -3,7 +3,7 @@ import { CinematicEffects } from '@/engine/effects/CinematicEffects'
 import { CinematicMotionConfig } from '@/stores/compositionStore'
 import { AudioEngine } from '@/engine/audio/AudioEngine'
 import { AudioFrameData } from '@/engine/audio/FrequencyExtractor'
-import { observeCanvasFrames } from '@/engine/render/FrameScheduler'
+import { observeThumbnailPreview } from '@/engine/render/ThumbnailPreview'
 import { useExportStore } from '@/stores/exportStore'
 
 interface CameraMotionThumbCanvasProps {
@@ -38,14 +38,14 @@ export const CameraMotionThumbCanvas: React.FC<CameraMotionThumbCanvasProps> = (
     const dummyRaw = new Uint8Array(512)
     const dummyTimeBytes = new Uint8Array(512)
 
-    const render = (frameTimestamp: number) => {
+    const render = (frameTimestamp: number, animated: boolean) => {
       if (useExportStore.getState().isExporting) return
 
       const now = frameTimestamp / 1000
       const audioEngine = AudioEngine.getInstance()
       let audioFrame: AudioFrameData
 
-      if (audioEngine.getStatus() === 'playing') {
+      if (animated && audioEngine.getStatus() === 'playing') {
         audioFrame = audioEngine.getLiveFrameData(frameTimestamp)
       } else {
         const bassPulse = Math.sin(now * 3.8) * 0.35 + 0.65
@@ -199,7 +199,7 @@ export const CameraMotionThumbCanvas: React.FC<CameraMotionThumbCanvasProps> = (
       ctx.restore()
     }
 
-    const stop = observeCanvasFrames(canvas, render, isActive ? 24 : 12)
+    const stop = observeThumbnailPreview(canvas, render, JSON.stringify({ motionConfig, isActive }))
 
     return () => {
       stop()

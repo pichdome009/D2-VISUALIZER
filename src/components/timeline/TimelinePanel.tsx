@@ -14,12 +14,18 @@ import { TrackHeader, TrackLane } from './TrackRow'
 import { TimelineToolbar } from './TimelineToolbar'
 import { TimelineRenderer } from '@/engine/timeline/TimelineRenderer'
 import { Tooltip } from '@/components/ui/Tooltip'
+import { usePanelResize } from '@/components/ui/usePanelResize'
 
 export const TimelinePanel: React.FC = () => {
   const { zoom, tracks, setScrollLeft } = useTimelineStore(useShallow((s) => ({
     zoom: s.zoom, tracks: s.tracks, setScrollLeft: s.setScrollLeft,
   })))
-  const { isTimelineCollapsed, toggleTimeline, timelineHeight, setTimelineHeight } = useUIStore()
+  const { isTimelineCollapsed, toggleTimeline, timelineHeight, setTimelineHeight } = useUIStore(useShallow(s => ({
+    isTimelineCollapsed: s.isTimelineCollapsed, toggleTimeline: s.toggleTimeline, timelineHeight: s.timelineHeight, setTimelineHeight: s.setTimelineHeight,
+  })))
+  const { panelRef, onPointerDown, onKeyDown } = usePanelResize({
+    value: timelineHeight, min: 160, max: 480, axis: 'y', direction: -1, commit: setTimelineHeight,
+  }, isTimelineCollapsed)
   const duration = usePreviewStore((s) => s.duration)
   const [filterActiveOnly, setFilterActiveOnly] = useState(false)
 
@@ -32,8 +38,6 @@ export const TimelinePanel: React.FC = () => {
 
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const headerContainerRef = useRef<HTMLDivElement>(null)
-  const isResizingHeightRef = useRef(false)
-  const [isResizingHeight, setIsResizingHeight] = useState(false)
 
   const totalWidth = TimelineRenderer.calculateTotalWidth(duration, zoom)
 
@@ -98,35 +102,9 @@ export const TimelinePanel: React.FC = () => {
     }
   }
 
-  // Handle timeline panel vertical resizing
-  const handleResizeMouseDown = (e: React.MouseEvent) => {
-    e.preventDefault()
-    isResizingHeightRef.current = true
-    setIsResizingHeight(true)
-    const startY = e.clientY
-    const startHeight = timelineHeight
-
-    const handleMouseMove = (ev: MouseEvent) => {
-      if (!isResizingHeightRef.current) return
-      const deltaY = startY - ev.clientY
-      const newH = Math.max(160, Math.min(500, startHeight + deltaY))
-      setTimelineHeight(newH)
-    }
-
-    const handleMouseUp = () => {
-      isResizingHeightRef.current = false
-      setIsResizingHeight(false)
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('mouseup', handleMouseUp)
-    }
-
-    window.addEventListener('mousemove', handleMouseMove)
-    window.addEventListener('mouseup', handleMouseUp)
-  }
-
   return (
-    <div data-timeline-panel data-resizing={isResizingHeight}
-      style={{ height: isTimelineCollapsed ? 32 : timelineHeight }}
+    <div data-timeline-panel ref={panelRef}
+      style={{ '--panel-size': `${timelineHeight}px`, height: isTimelineCollapsed ? 32 : 'var(--panel-size)' } as React.CSSProperties}
       className="panel-size-transition w-full bg-d2-surface border-t border-d2-border select-none z-20 shrink-0 overflow-hidden relative">
       <div aria-hidden={!isTimelineCollapsed} ref={node => { if (node) node.inert = !isTimelineCollapsed }}
         className={`panel-fade absolute top-0 inset-x-0 h-8 px-3 flex items-center justify-between ${isTimelineCollapsed ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
@@ -147,14 +125,16 @@ export const TimelinePanel: React.FC = () => {
         </button>
       </div>
     <div
-      style={{ height: `${timelineHeight}px` }}
+      style={{ height: 'var(--panel-size)' }}
       aria-hidden={isTimelineCollapsed} ref={node => { if (node) node.inert = isTimelineCollapsed }}
       className={`panel-fade w-full flex flex-col overflow-hidden relative ${isTimelineCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
     >
       {/* Top Resize Handle */}
       <div
-        onMouseDown={handleResizeMouseDown}
-        className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize hover:bg-d2-accent/60 z-40 transition-colors"
+        onPointerDown={onPointerDown} onKeyDown={onKeyDown}
+        role="separator" tabIndex={isTimelineCollapsed ? -1 : 0} aria-label="Resize timeline"
+        aria-orientation="horizontal" aria-valuemin={160} aria-valuemax={480} aria-valuenow={timelineHeight}
+        className="absolute top-0 left-0 right-0 h-1 touch-none cursor-ns-resize hover:bg-d2-accent/60 z-40 transition-colors"
       />
 
       {/* Timeline Professional Toolbar */}

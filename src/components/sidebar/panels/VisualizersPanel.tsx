@@ -21,7 +21,6 @@ const PAGE_SIZE = 24
 
 const ORDERED_CATEGORIES = [
   'All',
-  'Bass Pack',
   'Favorites',
   'Recent',
   'Spectrum',
@@ -96,9 +95,7 @@ export const VisualizersPanel: React.FC = () => {
 
     return VISUALIZER_PRESETS.filter((preset) => {
       // Category filter
-      if (selectedCategory === 'Bass Pack') {
-        if (!preset.tags.includes('Bass Pack')) return false
-      } else if (selectedCategory === 'Favorites') {
+      if (selectedCategory === 'Favorites') {
         if (!favorites.includes(preset.id)) return false
       } else if (selectedCategory === 'Recent') {
         if (!recents.includes(preset.id)) return false
@@ -139,7 +136,6 @@ export const VisualizersPanel: React.FC = () => {
       All: VISUALIZER_PRESETS.length,
       Favorites: favorites.length,
       Recent: recents.length,
-      'Bass Pack': VISUALIZER_PRESETS.filter(p => p.tags.includes('Bass Pack')).length,
     }
     VISUALIZER_PRESETS.forEach((p) => {
       map[p.category] = (map[p.category] || 0) + 1
@@ -159,13 +155,10 @@ export const VisualizersPanel: React.FC = () => {
                 Visualizer Browser
               </h2>
               <span className="text-3xs text-d2-textSubtle font-mono">
-                {VISUALIZER_PRESETS.length} presets · 200 new bass styles
+                {VISUALIZER_PRESETS.length} original presets
               </span>
             </div>
           </div>
-          <span className="px-2 py-0.5 rounded text-3xs font-mono font-bold bg-d2-accent/20 text-indigo-300 border border-d2-accent/40 shadow-xs">
-            BASS PACK
-          </span>
         </div>
 
         {/* Search Input Bar */}
@@ -173,7 +166,7 @@ export const VisualizersPanel: React.FC = () => {
           <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-d2-textSubtle pointer-events-none" />
           <input
             type="text"
-            placeholder="Search styles, tags, neon, 3D, bass..."
+            placeholder="Search styles, tags, neon, 3D..."
             aria-label="Search visualizer presets"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}

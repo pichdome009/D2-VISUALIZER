@@ -1,4 +1,6 @@
-import React, { useRef, useState } from 'react'
+import React from 'react'
+import { useShallow } from 'zustand/react/shallow'
+import { usePanelResize } from '@/components/ui/usePanelResize'
 import { useUIStore } from '@/stores/uiStore'
 import { SidebarNav } from './SidebarNav'
 import { MediaPanel } from './panels/MediaPanel'
@@ -9,33 +11,12 @@ import { EffectsPanel } from './panels/EffectsPanel'
 import { TemplatesPanel } from './panels/TemplatesPanel'
 
 export const SidebarContainer: React.FC = () => {
-  const { activeTab, isSidebarCollapsed, sidebarWidth, setSidebarWidth } = useUIStore()
-  const isDraggingRef = useRef(false)
-  const [isResizing, setIsResizing] = useState(false)
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    e.preventDefault()
-    isDraggingRef.current = true
-    setIsResizing(true)
-    const startX = e.clientX
-    const startW = sidebarWidth
-
-    const handleMouseMove = (ev: MouseEvent) => {
-      if (!isDraggingRef.current) return
-      const deltaX = ev.clientX - startX
-      setSidebarWidth(startW + deltaX)
-    }
-
-    const handleMouseUp = () => {
-      isDraggingRef.current = false
-      setIsResizing(false)
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('mouseup', handleMouseUp)
-    }
-
-    window.addEventListener('mousemove', handleMouseMove)
-    window.addEventListener('mouseup', handleMouseUp)
-  }
+  const { activeTab, isSidebarCollapsed, sidebarWidth, setSidebarWidth } = useUIStore(useShallow(s => ({
+    activeTab: s.activeTab, isSidebarCollapsed: s.isSidebarCollapsed, sidebarWidth: s.sidebarWidth, setSidebarWidth: s.setSidebarWidth,
+  })))
+  const { panelRef, onPointerDown, onKeyDown } = usePanelResize({
+    value: sidebarWidth, min: 240, max: 420, axis: 'x', direction: 1, commit: setSidebarWidth,
+  }, isSidebarCollapsed)
 
   const renderActivePanel = () => {
     switch (activeTab) {
@@ -62,22 +43,24 @@ export const SidebarContainer: React.FC = () => {
       <SidebarNav />
 
       {/* Expandable Content Drawer */}
-      <div data-sidebar-panel data-resizing={isResizing}
-        style={{ width: isSidebarCollapsed ? 0 : sidebarWidth + 4 }}
+      <div data-sidebar-panel
+        style={{ '--panel-size': `${sidebarWidth}px`, width: isSidebarCollapsed ? 0 : 'calc(var(--panel-size) + 4px)' } as React.CSSProperties}
         className="panel-size-transition h-full shrink-0 overflow-hidden"
-        aria-hidden={isSidebarCollapsed} ref={node => { if (node) node.inert = isSidebarCollapsed }}>
-        <div style={{ width: sidebarWidth + 4 }}
+        aria-hidden={isSidebarCollapsed} ref={node => { panelRef.current = node; if (node) node.inert = isSidebarCollapsed }}>
+        <div style={{ width: 'calc(var(--panel-size) + 4px)' }}
           className={`panel-fade flex h-full ${isSidebarCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
           <div
-            style={{ width: `${sidebarWidth}px` }}
+            style={{ width: 'var(--panel-size)' }}
             className="h-full bg-d2-surface flex flex-col overflow-hidden"
           >
             {renderActivePanel()}
           </div>
           {/* Vertical Resize Splitter */}
           <div
-            onMouseDown={handleMouseDown}
-            className="w-1 h-full cursor-col-resize z-30 bg-d2-border hover:bg-d2-accent active:bg-d2-accent transition-colors"
+            onPointerDown={onPointerDown} onKeyDown={onKeyDown}
+            role="separator" tabIndex={isSidebarCollapsed ? -1 : 0} aria-label="Resize sidebar"
+            aria-orientation="vertical" aria-valuemin={240} aria-valuemax={420} aria-valuenow={sidebarWidth}
+            className="w-1 h-full shrink-0 touch-none cursor-col-resize z-30 bg-d2-border hover:bg-d2-accent active:bg-d2-accent transition-colors"
             title="Drag to resize panel"
           />
         </div>

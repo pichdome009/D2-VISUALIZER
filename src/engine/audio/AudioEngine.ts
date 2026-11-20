@@ -274,6 +274,7 @@ export class AudioEngine {
   }
 
   public seek(seconds: number): void {
+    if (!Number.isFinite(seconds)) return
     const target = Math.max(0, Math.min(this.getDuration(), seconds))
     if (this.currentBuffer) {
       this.audioElement.currentTime = target
@@ -281,6 +282,10 @@ export class AudioEngine {
       this.demoCurrentTime = target
     }
     this.notifyTimeUpdate()
+  }
+
+  public getIsSeeking(): boolean {
+    return !!this.currentBuffer && this.audioElement.seeking
   }
 
   public setVolume(volume: number): void {

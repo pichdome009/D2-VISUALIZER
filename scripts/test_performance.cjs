@@ -376,9 +376,11 @@ if (!process.versions.electron) {
             await wait(150)
             const stripResult = await js(`(${async function(label) {
               const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
-              const root = document.querySelector('[data-category-strip="' + label + '"]')
-              const viewport = root.querySelector('[data-category-viewport]')
-              const max = viewport.scrollWidth - viewport.clientWidth
+               const root = document.querySelector('[data-category-strip="' + label + '"]')
+               const viewport = root.querySelector('[data-category-viewport]')
+               // Wait for overflow arrows and tab layout before measuring the viewport.
+               await wait(100)
+               const max = viewport.scrollWidth - viewport.clientWidth
               if (max <= 0) throw new Error('Category overflow not detected')
               const wheel = (deltaX, deltaY, ctrlKey = false) => {
                 const event = new WheelEvent('wheel', { deltaX, deltaY, ctrlKey, bubbles: true, cancelable: true })
@@ -392,7 +394,7 @@ if (!process.versions.electron) {
               const trackpad = viewport.scrollLeft
               const zoomConsumed = wheel(0, 100, true)
               const zoomPosition = viewport.scrollLeft
-              viewport.scrollLeft = max
+               viewport.scrollLeft = viewport.scrollWidth
               const endConsumed = wheel(0, 100)
               await wait(50)
               const rightDisabled = root.querySelector('[aria-label="' + label + ': scroll right"]').disabled
@@ -409,7 +411,8 @@ if (!process.versions.electron) {
               viewport.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }))
               const end = viewport.scrollLeft
               return { label, max, consumed, down, trackpad, zoomConsumed, zoomPosition, endConsumed, rightDisabled, arrow, focusRevealed, home, end }
-            }.toString()})(${JSON.stringify(label)})`)
+             }.toString()})(${JSON.stringify(label)})`)
+             console.log('Category wheel checks:', JSON.stringify(stripResult))
             assert.ok(stripResult.consumed && stripResult.down > 0, 'Vertical wheel did not scroll categories')
             assert.ok(stripResult.trackpad < stripResult.down, 'Horizontal trackpad scroll failed')
             assert.ok(!stripResult.zoomConsumed && stripResult.zoomPosition === stripResult.trackpad, 'Category strip consumes zoom gestures')
@@ -424,24 +427,115 @@ if (!process.versions.electron) {
             assert.ok(await js(`document.querySelector('[data-category-viewport]').scrollLeft > 0`), 'Chromium mouse-wheel input failed')
             window.webContents.debugger.detach()
             await screenshot(tab === 'effects' ? 'camera-category-wheel' : 'visualizer-category-wheel')
-            console.log('Category wheel checks:', JSON.stringify(stripResult))
           }
           await js(`window.__D2_UI_STORE__.getState().setActiveTab('visualizers')`)
           await wait(100)
 
-          await js(`Array.from(document.querySelectorAll('[aria-pressed] button, button[aria-pressed]')).find(button => button.textContent.trim().startsWith('Bass Pack')).click()`)
+          const splitterChecks = await js(`(${async function() {
+            const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+            const ui = window.__D2_UI_STORE__
+            const audio = window.__D2_AUDIO_STORE__
+            const preview = document.querySelector('[aria-label="Composition preview"]')
+            const clear = CanvasRenderingContext2D.prototype.clearRect
+            let painting = 0, checking = false
+            CanvasRenderingContext2D.prototype.clearRect = function(...args) {
+              if (checking && this.canvas === preview) painting++
+              return clear.apply(this, args)
+            }
+            const results = []
+            await audio.getState().play()
+            try {
+              for (const [label, field, setter, axis, direction] of [
+                ['Resize sidebar', 'sidebarWidth', 'setSidebarWidth', 'x', 1],
+                ['Resize inspector', 'inspectorWidth', 'setInspectorWidth', 'x', -1],
+                ['Resize timeline', 'timelineHeight', 'setTimelineHeight', 'y', -1],
+              ]) {
+                const handle = document.querySelector('[aria-label="' + label + '"]')
+                const panel = handle.closest('[data-sidebar-panel], [data-inspector-panel], [data-timeline-panel]')
+                const initial = ui.getState()[field]
+                const buffer = [preview.width, preview.height]
+                let commits = 0
+                const unsubscribe = ui.subscribe((state, previous) => { if (state[field] !== previous[field]) commits++ })
+                const pointer = (type, delta) => new PointerEvent(type, { bubbles: true, cancelable: true,
+                  button: 0, buttons: type === 'pointerup' ? 0 : 1, pointerId: 71, isPrimary: true,
+                  clientX: 400 + (axis === 'x' ? delta * direction : 0), clientY: 300 + (axis === 'y' ? delta * direction : 0) })
+                handle.dispatchEvent(pointer('pointerdown', 0))
+                checking = true; painting = 0
+                const gaps = []
+                let previous = performance.now()
+                for (let frame = 1; frame <= 12; frame++) {
+                  for (let sample = 0; sample < 100; sample++) window.dispatchEvent(pointer('pointermove', frame * 3))
+                  await new Promise(resolve => requestAnimationFrame(resolve))
+                  const now = performance.now(); gaps.push(now - previous); previous = now
+                }
+                const during = { commits, paints: painting, bufferStable: preview.width === buffer[0] && preview.height === buffer[1],
+                  cssSize: parseFloat(panel.style.getPropertyValue('--panel-size')), transition: getComputedStyle(panel).transitionDuration }
+                checking = false
+                window.dispatchEvent(pointer('pointerup', 40))
+                await wait(250)
+                const released = { commits, stored: ui.getState()[field], resizing: panel.dataset.resizing }
+                handle.dispatchEvent(pointer('pointerdown', 0))
+                window.dispatchEvent(pointer('pointermove', 20))
+                window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+                const cancelled = ui.getState()[field] === released.stored && panel.dataset.resizing === 'false'
+                handle.dispatchEvent(new KeyboardEvent('keydown', { key: axis === 'x' ? 'ArrowRight' : 'ArrowDown', bubbles: true, cancelable: true }))
+                const keyboard = ui.getState()[field] === released.stored + 8 * direction
+                unsubscribe()
+                ui.getState()[setter](initial)
+                await wait(250)
+                results.push({ label, initial, during, released, cancelled, keyboard, gaps })
+              }
+            } finally {
+              checking = false
+              CanvasRenderingContext2D.prototype.clearRect = clear
+              audio.getState().pause()
+            }
+            return results
+          }.toString()})()`)
+          for (const check of splitterChecks) {
+            assert.equal(check.during.commits, 0, check.label + ' updates store while dragging')
+            assert.equal(check.during.paints, 0, check.label + ' repaints composition during drag')
+            assert.equal(check.during.bufferStable, true, check.label + ' reallocates preview buffer during drag')
+            assert.equal(check.during.cssSize, check.initial + 36, check.label + ' does not follow pointer')
+            assert.equal(check.during.transition, '0s', check.label + ' animates drag dimensions')
+            assert.equal(check.released.commits, 1, check.label + ' must commit only once')
+            assert.equal(check.released.stored, check.initial + 40, check.label + ' loses final pointer position')
+            assert.ok(check.cancelled && check.keyboard, check.label + ' cancel or keyboard control failed')
+          }
+          window.webContents.debugger.attach('1.3')
+          for (const [label, field, setter, direction] of [
+            ['Resize sidebar', 'sidebarWidth', 'setSidebarWidth', 1],
+            ['Resize inspector', 'inspectorWidth', 'setInspectorWidth', -1],
+            ['Resize timeline', 'timelineHeight', 'setTimelineHeight', -1],
+          ]) {
+            const target = await js(`(() => { const rect = document.querySelector('[aria-label="${label}"]').getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, size: window.__D2_UI_STORE__.getState().${field} }; })()`)
+            await window.webContents.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: target.x, y: target.y })
+            await window.webContents.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: target.x, y: target.y, button: 'left', buttons: 1, clickCount: 1 })
+            const end = { x: target.x + (field === 'timelineHeight' ? 0 : 32 * direction), y: target.y + (field === 'timelineHeight' ? -32 : 0) }
+            await window.webContents.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', ...end, button: 'left', buttons: 1 })
+            await window.webContents.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...end, button: 'left', buttons: 0, clickCount: 1 })
+            await wait(250)
+            assert.equal(await js(`window.__D2_UI_STORE__.getState().${field}`), target.size + 32, label + ' native mouse drag failed')
+            await js(`window.__D2_UI_STORE__.getState().${setter}(${target.size})`)
+            await wait(250)
+          }
+          window.webContents.debugger.detach()
+          console.log('Splitter checks:', JSON.stringify(splitterChecks))
+
+          await js(`Array.from(document.querySelectorAll('button[aria-pressed]')).find(button => button.textContent.trim().startsWith('All')).click()`)
           await wait(200)
           assert.equal(await js(`document.querySelectorAll('[data-preset-id]').length`), 24, 'Preset browser mounts more than one page')
-          const bassIds = new Set()
-          for (let page = 0; page < 9; page++) {
-            for (const id of await js(`Array.from(document.querySelectorAll('[data-preset-id]')).map(card => card.dataset.presetId)`)) bassIds.add(id)
-            if (page < 8) { await js(`document.querySelector('[aria-label="Next preset page"]').click()`); await wait(80) }
+          const presetIds = new Set()
+          for (let page = 0; page < 2; page++) {
+            for (const id of await js(`Array.from(document.querySelectorAll('[data-preset-id]')).map(card => card.dataset.presetId)`)) presetIds.add(id)
+            if (page < 1) { await js(`document.querySelector('[aria-label="Next preset page"]').click()`); await wait(80) }
           }
-          assert.equal(bassIds.size, 200, 'Not all 200 new presets are accessible')
+          assert.equal(presetIds.size, 37, 'Browser must contain exactly the original 37 presets')
+          assert.equal(await js(`document.querySelector('[data-sidebar-panel]').textContent.includes('BASS PACK')`), false, 'Removed pack badge remains')
           await js(`document.querySelector('[data-preset-id]').click()`)
           await wait(150)
           assert.equal(await js(`document.querySelectorAll('[data-preset-id][aria-pressed="true"]').length`), 1, 'Preset browser selects multiple cards')
-          assert.equal(await js(`window.__D2_COMPOSITION_STORE__.getState().visualizer.bassReactivity.enabled`), true, 'Bass preset did not apply response settings')
+          assert.equal(await js(`window.__D2_COMPOSITION_STORE__.getState().visualizer.bassReactivity.enabled`), false, 'Original preset should bypass bass rack by default')
           await js(`window.__D2_UI_STORE__.getState().setSelectedLayer('visualizer')`)
           await wait(100)
           await js(`document.querySelector('[aria-label="Bass response preset"]').click()`)
@@ -474,7 +568,7 @@ if (!process.versions.electron) {
           await wait(300)
           await screenshot('bass-rack-and-presets')
           await js(`window.__D2_AUDIO_STORE__.getState().pause()`)
-          console.log('All 200 bass presets, rack controls, undo/redo, and project round trip passed')
+          console.log('Original 37 presets, rack controls, undo/redo, and project round trip passed')
 
           assert.equal(hardwareQueries, 0, 'App launch performed a hardware scan')
           assert.equal(await js(`window.electronAPI.hardwareGetSaved()`), null, 'Fresh test profile unexpectedly has hardware data')

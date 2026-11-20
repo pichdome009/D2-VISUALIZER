@@ -7,24 +7,15 @@ import { LayerCompositor } from '@/engine/layers/LayerCompositor'
 import { subscribeFrames } from '@/engine/render/FrameScheduler'
 import { useExportStore } from '@/stores/exportStore'
 import { getPreviewSize } from '@/engine/render/PreviewSizing'
+import { observeSettledViewport } from '@/engine/render/SettledViewport'
+import { isPanelResizing } from '@/engine/render/PanelResizeState'
+import { getTimelineScrubTime } from '@/engine/timeline/TimelineScrubState'
 
 export const PreviewCanvas: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const displayRef = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState<{ width: number; height: number } | null>(null)
-
-  useEffect(() => {
-    const container = containerRef.current
-    if (!container) return
-    const observer = new ResizeObserver(([entry]) => {
-      const { width, height } = entry.contentRect
-      if (width <= 0 || height <= 0) return
-      setViewport(previous => previous?.width === width && previous?.height === height
-        ? previous : { width, height })
-    })
-    observer.observe(container)
-    return () => observer.disconnect()
-  }, [])
 
   const { aspectRatio, zoom, fitMode, showSafeGuides, isPlaying, previewQuality, isFullscreenPreview, toggleFullscreenPreview, setIsFullscreenPreview } = usePreviewStore(useShallow((s) => ({
     aspectRatio: s.aspectRatio, zoom: s.zoom, fitMode: s.fitMode, showSafeGuides: s.showSafeGuides,
@@ -74,6 +65,24 @@ export const PreviewCanvas: React.FC = () => {
   })
 
   useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    return observeSettledViewport(container, size => {
+      const display = displayRef.current
+      if (!display) return
+      const measured = getPreviewSize({
+        nativeWidth, nativeHeight, viewportWidth: size.width, viewportHeight: size.height,
+        zoom, fullscreen: isFullscreenPreview, fill: fitMode === 'fill',
+        quality: previewQuality, dpr: window.devicePixelRatio || 1,
+      })
+      display.style.width = `${measured.displayWidth}px`
+      display.style.height = `${measured.displayHeight}px`
+    }, size => {
+      setViewport(previous => previous?.width === size.width && previous?.height === size.height ? previous : size)
+    })
+  }, [nativeWidth, nativeHeight, zoom, isFullscreenPreview, fitMode, previewQuality])
+
+  useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
@@ -81,9 +90,16 @@ export const PreviewCanvas: React.FC = () => {
 
     const engine = AudioEngine.getInstance()
     const compositor = LayerCompositor.getInstance()
+    let lastScrubRender = -Infinity
 
     const render = (frameTimestamp: number) => {
-      if (useExportStore.getState().isExporting) return
+      // Keep the last frame on screen while dragging; audio continues uninterrupted.
+      if (isPanelResizing() || useExportStore.getState().isExporting) return
+      const scrubTime = getTimelineScrubTime()
+      if (scrubTime !== null) {
+        if (frameTimestamp - lastScrubRender < 100) return
+        lastScrubRender = frameTimestamp
+      } else lastScrubRender = -Infinity
       // Set canvas pixel buffer according to active performance mode
       if (canvas.width !== bufferWidth || canvas.height !== bufferHeight) {
         canvas.width = bufferWidth
@@ -92,8 +108,8 @@ export const PreviewCanvas: React.FC = () => {
 
       // Query real-time FFT audio frame and playhead
       const audioFrame = engine.getLiveFrameData(frameTimestamp)
-      const audioTime = engine.getCurrentTime()
-      const timestamp = audioTime > 0 ? audioTime : performance.now() / 1000
+      const audioTime = scrubTime ?? engine.getCurrentTime()
+      const timestamp = scrubTime !== null || audioTime > 0 ? audioTime : performance.now() / 1000
       const state = useCompositionStore.getState()
 
       ctx.save()
@@ -113,7 +129,7 @@ export const PreviewCanvas: React.FC = () => {
         dpr: window.devicePixelRatio || 1,
         renderScale: qualityScale,
         showSafeGuides,
-        isPlaying,
+        isPlaying: scrubTime === null && isPlaying,
         audioTime,
       })
 
@@ -158,6 +174,7 @@ export const PreviewCanvas: React.FC = () => {
       )}
 
       <div
+        ref={displayRef}
         className="relative shrink-0 ring-1 ring-white/10 overflow-hidden bg-black"
         style={{ width: displayWidth, height: displayHeight }}
       >

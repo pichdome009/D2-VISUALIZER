@@ -152,7 +152,7 @@ export class BackgroundManager {
     }
 
     // Drift correction: if drift exceeds 100ms, align video currentTime to audio timeline
-    if (Math.abs(video.currentTime - targetVideoTime) > 0.1) {
+    if (!video.seeking && Math.abs(video.currentTime - targetVideoTime) > 0.1) {
       video.currentTime = targetVideoTime
     }
   }

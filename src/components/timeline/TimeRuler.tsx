@@ -1,54 +1,24 @@
-import React, { useRef } from 'react'
+import React from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { usePreviewStore } from '@/stores/previewStore'
 import { useAudioStore } from '@/stores/audioStore'
 import { TimelineRenderer } from '@/engine/timeline/TimelineRenderer'
 import { TimecodeUtils } from '@/engine/timeline/TimecodeUtils'
+import { useTimelineScrub } from './useTimelineScrub'
 
 export const TimeRuler: React.FC = () => {
-  const rulerRef = useRef<HTMLDivElement>(null)
   const { zoom, markers, fps, deleteMarker } = useTimelineStore(useShallow((s) => ({
     zoom: s.zoom, markers: s.markers, fps: s.fps, deleteMarker: s.deleteMarker,
   })))
   const duration = usePreviewStore((s) => s.duration)
-  const setCurrentTime = usePreviewStore((s) => s.setCurrentTime)
   const audioSeek = useAudioStore((s) => s.seek)
 
-  const isScrubbingRef = useRef(false)
+  const { onPointerDown, onKeyDown } = useTimelineScrub(false)
 
   const totalWidth = TimelineRenderer.calculateTotalWidth(duration, zoom)
   const totalSeconds = Math.ceil(Math.max(10, duration))
   const interval = TimelineRenderer.getRulerInterval(zoom)
-
-  const handleSeek = (clientX: number) => {
-    if (!rulerRef.current) return
-    const rect = rulerRef.current.getBoundingClientRect()
-    const clickX = clientX - rect.left
-    const newTime = Math.max(0, Math.min(duration, clickX / zoom))
-    setCurrentTime(newTime)
-    audioSeek(newTime)
-  }
-
-  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    isScrubbingRef.current = true
-    handleSeek(e.clientX)
-
-    const handleMouseMove = (ev: MouseEvent) => {
-      if (!isScrubbingRef.current) return
-      handleSeek(ev.clientX)
-    }
-
-    const handleMouseUp = () => {
-      isScrubbingRef.current = false
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('mouseup', handleMouseUp)
-    }
-
-    window.addEventListener('mousemove', handleMouseMove)
-    window.addEventListener('mouseup', handleMouseUp)
-  }
 
   const renderTicks = () => {
     const ticks: React.ReactNode[] = []
@@ -83,10 +53,10 @@ export const TimeRuler: React.FC = () => {
 
   return (
     <div
-      ref={rulerRef}
-      onMouseDown={handleMouseDown}
+      data-timeline-ruler onPointerDown={onPointerDown} onKeyDown={onKeyDown}
+      role="group" aria-label="Timeline ruler" tabIndex={0}
       style={{ width: `${totalWidth}px` }}
-      className="h-10 bg-d2-surface border-b border-d2-border relative cursor-pointer select-none"
+      className="h-10 bg-d2-surface border-b border-d2-border relative cursor-pointer select-none touch-none"
     >
       {/* Ticks and Timecode Labels */}
       {renderTicks()}
@@ -96,10 +66,15 @@ export const TimeRuler: React.FC = () => {
         const x = m.time * zoom
         return (
           <div
-            key={m.id}
+             key={m.id}
+             data-timeline-marker={m.id}
+             role="button" tabIndex={0} aria-label={`Go to marker ${m.name}`}
+             onPointerDown={e => e.stopPropagation()}
+             onKeyDown={e => {
+               if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); audioSeek(m.time) }
+             }}
             onClick={(e) => {
               e.stopPropagation()
-              setCurrentTime(m.time)
               audioSeek(m.time)
             }}
             onContextMenu={(e) => {

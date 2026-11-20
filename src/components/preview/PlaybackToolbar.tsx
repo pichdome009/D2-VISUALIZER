@@ -1,4 +1,5 @@
-import React from 'react'
+import React, { useRef } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import {
   Play,
   Pause,
@@ -13,11 +14,11 @@ import {
 import { useAudioStore } from '@/stores/audioStore'
 import { formatTimecode } from '@/engine/audio/AudioMetadata'
 import { Tooltip } from '@/components/ui/Tooltip'
+import { useTimelineClock } from '@/components/timeline/useTimelineClock'
 
 export const PlaybackToolbar: React.FC = () => {
   const {
     status,
-    currentTime,
     duration,
     volume,
     isMuted,
@@ -30,7 +31,26 @@ export const PlaybackToolbar: React.FC = () => {
     toggleMute,
     toggleLooping,
     setAudioMonitorOpen,
-  } = useAudioStore()
+  } = useAudioStore(useShallow(s => ({
+    status: s.status, duration: s.duration, volume: s.volume, isMuted: s.isMuted, isLooping: s.isLooping,
+    play: s.play, pause: s.pause, stop: s.stop, seek: s.seek, setVolume: s.setVolume,
+    toggleMute: s.toggleMute, toggleLooping: s.toggleLooping, setAudioMonitorOpen: s.setAudioMonitorOpen,
+  })))
+  const timecodeRef = useRef<HTMLSpanElement>(null)
+  const positionRef = useRef<HTMLInputElement>(null)
+  useTimelineClock(time => {
+    const timecode = timecodeRef.current, position = positionRef.current
+    if (timecode) {
+      const text = formatTimecode(time)
+      if (timecode.textContent !== text) timecode.textContent = text
+    }
+    if (position) {
+      position.value = String(time)
+      const progress = duration > 0 ? Math.max(0, Math.min(100, time / duration * 100)) : 0
+      position.style.background = `linear-gradient(to right, var(--color-accent) ${progress}%, var(--color-border) ${progress}%)`
+    }
+  })
+  const currentTime = useAudioStore.getState().currentTime
 
   const isPlaying = status === 'playing'
 
@@ -92,7 +112,7 @@ export const PlaybackToolbar: React.FC = () => {
 
         <Tooltip content="Forward 5s" side="top">
           <button
-            onClick={() => seek(Math.min(duration, currentTime + 5))}
+             onClick={() => seek(Math.min(duration, useAudioStore.getState().currentTime + 5))}
             className="w-7 h-7 flex items-center justify-center rounded hover:bg-d2-surfaceElevated text-d2-textMuted hover:text-white transition-colors"
           >
             <SkipForward className="w-3.5 h-3.5" />
@@ -102,13 +122,14 @@ export const PlaybackToolbar: React.FC = () => {
 
       {/* Center: Real Timecode & Scrubber */}
       <div className="flex-1 min-w-[160px] mx-3 flex items-center gap-2">
-        <span className="font-mono text-xs font-semibold text-white min-w-[65px] text-right">
+        <span ref={timecodeRef} data-playback-timecode className="font-mono text-xs font-semibold text-white min-w-[65px] text-right">
           {formatTimecode(currentTime)}
         </span>
 
         {/* Scrubber Bar */}
         <div className="flex-1 relative flex items-center group cursor-pointer">
           <input
+            ref={positionRef}
             type="range"
             min={0}
             max={duration || 100}

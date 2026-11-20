@@ -4,6 +4,7 @@ import { AudioMetadata } from '@/engine/audio/AudioMetadata'
 import { WaveformData } from '@/engine/audio/WaveformGenerator'
 import { useTimelineStore } from './timelineStore'
 import { usePreviewStore } from './previewStore'
+import { getTimelineScrubTime } from '@/engine/timeline/TimelineScrubState'
 
 interface AudioState {
   currentTrack: AudioMetadata | null
@@ -39,7 +40,9 @@ export const useAudioStore = create<AudioState>((set, get) => {
   // Subscribe AudioEngine to update store on time & status changes
   engine.addListener({
     onTimeUpdate: (currentTime, duration) => {
-      set({ currentTime, duration })
+      // Scrub readouts use a transient clock; decoder notifications cannot pull the cursor back.
+      if (getTimelineScrubTime() !== null) return
+      set((s) => s.currentTime === currentTime && s.duration === duration ? s : { currentTime, duration })
       usePreviewStore.setState((s) => {
         const nextDuration = duration > 0 ? duration : s.duration
         return s.currentTime === currentTime && s.duration === nextDuration

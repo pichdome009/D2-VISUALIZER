@@ -230,6 +230,7 @@ export const CameraMotionBrowser: React.FC = () => {
                 return (
                   <div
                     key={preset.id}
+                    data-camera-preset-id={preset.id}
                     onClick={() => handleApplyPreset(preset)}
                     className={`p-1.5 rounded-lg border transition-all cursor-pointer group flex items-center gap-2.5 relative overflow-hidden ${
                       isSelected

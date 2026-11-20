@@ -4,6 +4,8 @@ import { BassEnvelopeFollower } from '@/engine/audio/BassReactivity'
 import { observeCanvasFrames } from '@/engine/render/FrameScheduler'
 import { useCompositionStore } from '@/stores/compositionStore'
 import { useExportStore } from '@/stores/exportStore'
+import { isPanelResizing } from '@/engine/render/PanelResizeState'
+import { getTimelineScrubTime } from '@/engine/timeline/TimelineScrubState'
 
 export const BassMeter: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -15,7 +17,7 @@ export const BassMeter: React.FC = () => {
     const history = new Float32Array(120)
     let cursor = 0
     return observeCanvasFrames(canvas, frameTimestamp => {
-      if (useExportStore.getState().isExporting) return
+      if (getTimelineScrubTime() !== null || isPanelResizing() || useExportStore.getState().isExporting) return
       const engine = AudioEngine.getInstance()
       const config = useCompositionStore.getState().visualizer.bassReactivity
       const frame = engine.getLiveFrameData(frameTimestamp)

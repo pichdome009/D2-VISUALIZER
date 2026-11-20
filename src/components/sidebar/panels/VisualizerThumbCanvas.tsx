@@ -4,7 +4,7 @@ import { AudioEngine } from '@/engine/audio/AudioEngine'
 import { AudioFrameData } from '@/engine/audio/FrequencyExtractor'
 import { VisualizerConfig } from '@/stores/compositionStore'
 import { IVisualizerPlugin } from '@/engine/visualizers/types'
-import { observeCanvasFrames } from '@/engine/render/FrameScheduler'
+import { observeThumbnailPreview } from '@/engine/render/ThumbnailPreview'
 import { useExportStore } from '@/stores/exportStore'
 import { BassEnvelopeFollower } from '@/engine/audio/BassReactivity'
 
@@ -53,14 +53,14 @@ export const VisualizerThumbCanvas: React.FC<VisualizerThumbCanvasProps> = ({
     const barCount = presetConfig?.barCount || 40
     const thickness = presetConfig?.thickness || 4
     const spacing = presetConfig?.spacing || 2
-    const glow = presetConfig?.glow || 16
+    const glow = Math.min(6, presetConfig?.glow ?? 16)
     const sensitivity = presetConfig?.sensitivity || 1.2
     const smoothing = presetConfig?.smoothing || 0.8
 
     // Internal simulation angle for 3D procedural previews
     let sphereRot = 0
 
-    const render = (frameTimestamp: number) => {
+    const render = (frameTimestamp: number, animated: boolean) => {
       if (useExportStore.getState().isExporting) return
       if (!plugin && renderType !== '3d') {
         // Thumbnail state must not resize or advance the main preview's plugin.
@@ -71,7 +71,7 @@ export const VisualizerThumbCanvas: React.FC<VisualizerThumbCanvasProps> = ({
       const audioEngine = AudioEngine.getInstance()
       let audioFrame: AudioFrameData
 
-      if (audioEngine.getStatus() === 'playing') {
+      if (animated && audioEngine.getStatus() === 'playing') {
         audioFrame = audioEngine.getLiveFrameData(frameTimestamp)
       } else {
         // High-fidelity procedural wave simulation for idle preview
@@ -222,7 +222,7 @@ export const VisualizerThumbCanvas: React.FC<VisualizerThumbCanvasProps> = ({
             spacing,
             sensitivity,
             smoothing,
-            glow: glow + bassResponse * bassConfig.glowBoost,
+            glow: Math.min(8, glow + bassResponse * bassConfig.glowBoost),
             primaryColor,
             accentColor,
             positionX: 0,
@@ -256,17 +256,18 @@ export const VisualizerThumbCanvas: React.FC<VisualizerThumbCanvasProps> = ({
       ctx.restore()
     }
 
-    const stop = observeCanvasFrames(canvas, render, isActive ? 24 : 12)
+    const stop = observeThumbnailPreview(canvas, render, JSON.stringify({ pluginId, renderType, presetConfig }))
 
     return () => {
       stop()
       plugin?.dispose()
     }
-  }, [pluginId, renderType, presetConfig, isActive])
+  }, [pluginId, renderType, presetConfig])
 
   return (
     <canvas
       ref={canvasRef}
+      data-thumbnail-active={isActive || undefined}
       className={`w-full h-full block rounded pointer-events-none ${className}`}
     />
   )

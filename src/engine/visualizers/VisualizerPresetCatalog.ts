@@ -1,5 +1,4 @@
 import { VisualizerConfig } from '@/stores/compositionStore'
-import { BASS_VISUALIZER_PRESETS } from './BassPresetPack'
 
 export interface VisualizerPreset {
   id: string
@@ -989,4 +988,4 @@ export const LEGACY_VISUALIZER_PRESETS: VisualizerPreset[] = [
   },
 ]
 
-export const VISUALIZER_PRESETS: VisualizerPreset[] = [...LEGACY_VISUALIZER_PRESETS, ...BASS_VISUALIZER_PRESETS]
+export const VISUALIZER_PRESETS: VisualizerPreset[] = LEGACY_VISUALIZER_PRESETS

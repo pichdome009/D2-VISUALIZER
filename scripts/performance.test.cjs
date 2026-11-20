@@ -21,7 +21,7 @@ function loadModule(relativePath, globals = {}, imports = {}) {
   return exports
 }
 
-function scheduler() {
+function scheduler(clock = () => 0) {
   let sequence = 0
   const pending = new Map()
   const listeners = new Map()
@@ -33,6 +33,7 @@ function scheduler() {
   }
   const api = loadModule('src/engine/render/FrameScheduler.ts', {
     document,
+    performance: { now: clock },
     requestAnimationFrame: callback => { pending.set(++sequence, callback); return sequence },
     cancelAnimationFrame: id => pending.delete(id),
     IntersectionObserver: class {
@@ -122,6 +123,381 @@ test('invalid FPS is rejected', () => {
   for (const fps of [0, -1, NaN, Infinity]) {
     assert.throws(() => frames.subscribeFrames(() => {}, fps), /FPS must be positive/)
   }
+})
+
+test('foreground frames precede at most one fair background card per tick', () => {
+  const frames = scheduler()
+  const order = []
+  const stops = ['a', 'b', 'c'].map(name => frames.subscribeFrames(() => order.push(name), 60, { background: true }))
+  const main = frames.subscribeFrames(() => order.push('main'), 60)
+  for (let index = 0; index < 3; index++) frames.frame(index * 17)
+  assert.deepEqual(order, ['main', 'a', 'main', 'b', 'main', 'c'])
+  stops.forEach(stop => stop()); main()
+})
+
+test('background cards defer expensive ticks but never starve', () => {
+  let time = 0
+  const frames = scheduler(() => time)
+  let cards = 0
+  const main = frames.subscribeFrames(() => { time += 12 }, 60)
+  const card = frames.subscribeFrames(() => cards++, 60, { background: true })
+  for (let index = 0; index < 60; index++) frames.frame(index * 1000 / 60)
+  assert.equal(cards, 4)
+  main(); card()
+})
+
+test('interactive cursor callbacks run before composition and thumbnail work', () => {
+  const frames = scheduler(), order = []
+  const main = frames.subscribeFrames(() => order.push('preview'), 60)
+  const card = frames.subscribeFrames(() => order.push('card'), 12, { background: true })
+  const cursor = frames.subscribeFrames(() => order.push('cursor'), 60, { interactive: true })
+  frames.frame(0)
+  assert.deepEqual(order, ['cursor', 'preview', 'card'])
+  main(); card(); cursor()
+})
+
+function scrubHarness({ preserveOffset = false, scrollLeft = 0, ready = () => true } = {}) {
+  const frames = scheduler(), listeners = new Map()
+  const scrub = loadModule('src/engine/timeline/TimelineScrubState.ts')
+  let rectReads = 0, time = 3, zoom = 10, duration = 30, starts = 0
+  const previews = [], commits = []
+  const viewport = { dataset: {}, scrollLeft, scrollWidth: 1400, clientWidth: 200,
+    getBoundingClientRect() { rectReads++; return { left: 100, right: 300 } },
+  }
+  const body = { style: { cursor: 'default', userSelect: 'text' } }
+  const api = loadModule('src/engine/timeline/TimelineScrubber.ts', {
+    document: { body }, window: {
+      addEventListener: (name, callback) => listeners.set(name, callback),
+      removeEventListener: (name, callback) => { if (listeners.get(name) === callback) listeners.delete(name) },
+    },
+  }, { '../render/FrameScheduler': frames, './TimelineScrubState': scrub })
+  const event = (clientX, pointerId = 1) => ({ clientX, pointerId, button: 0, isPrimary: true, preventDefault() {} })
+  return { ...api, frames, scrub, listeners, viewport, body, previews, commits, event,
+    get rectReads() { return rectReads }, get starts() { return starts },
+    begin(clientX = 120) { return api.beginTimelineScrub(event(clientX), viewport, {
+      getTime: () => time, getZoom: () => zoom, getDuration: () => duration, preserveOffset,
+      start: () => starts++, preview: target => { if (!ready()) return false; previews.push(target); return true },
+      finish: target => { time = target; commits.push(target) },
+    }) },
+    emit(name, data) { listeners.get(name)?.(data) },
+  }
+}
+
+test('pointer-to-time conversion accounts for scroll, zoom, grab offset and bounds', () => {
+  const { pointerTimelineTime } = scrubHarness()
+  assert.equal(pointerTimelineTime(150, 100, 200, 10, 30), 25)
+  assert.equal(pointerTimelineTime(150, 100, 200, 80, 30), 3.125)
+  assert.equal(pointerTimelineTime(150, 100, 200, 4, 30), 30)
+  assert.equal(pointerTimelineTime(-500, 100, 0, 10, 30), 0)
+  assert.equal(pointerTimelineTime(150, 100, 200, 10, 30, 10), 24)
+  for (const invalid of [NaN, Infinity, -Infinity]) assert.equal(pointerTimelineTime(invalid, 100, 0, 10, 30), 0)
+  assert.equal(pointerTimelineTime(150, 100, 0, 0, 30), 0)
+})
+
+for (const refreshRate of [60, 144]) {
+  test(`timeline scrub coalesces pointer bursts at ${refreshRate} Hz and caps decoder seeks`, () => {
+    const h = scrubHarness()
+    const cancel = h.begin()
+    for (let index = 0; index < 2000; index++) h.emit('pointermove', h.event(140))
+    assert.equal(h.previews.length, 0)
+    assert.equal(h.rectReads, 1)
+    assert.equal(h.scrub.getTimelineScrubTime(), 2)
+    assert.equal(h.frames.pending.size, 1)
+    for (let index = 0; index < refreshRate; index++) {
+      h.emit('pointermove', h.event(140 + index / refreshRate * 10))
+      h.frames.frame(index * 1000 / refreshRate)
+    }
+    assert.ok(h.previews.length <= 10 && h.previews.length >= 8)
+    assert.equal(h.rectReads, 1, 'Drag samples must not read layout')
+    assert.equal(h.commits.length, 0)
+    h.emit('pointerup', h.event(153.125))
+    assert.deepEqual(h.commits, [5.3125])
+    assert.equal(h.scrub.getTimelineScrubTime(), null)
+    assert.equal(h.frames.pending.size, 0)
+    assert.equal(h.listeners.size, 0)
+    assert.equal(h.viewport.dataset.scrubbing, 'false')
+    assert.equal(h.body.style.cursor, 'default')
+    cancel(); assert.equal(h.commits.length, 1)
+  })
+}
+
+test('scrub decoder backpressure keeps only the latest target and still commits exact release', () => {
+  let ready = false
+  const h = scrubHarness({ ready: () => ready })
+  h.begin()
+  for (let index = 0; index < 60; index++) {
+    h.emit('pointermove', h.event(150 + index))
+    h.frames.frame(index * 17)
+  }
+  assert.equal(h.previews.length, 0)
+  assert.ok(h.scrub.getTimelineScrubTime() > 10)
+  ready = true
+  h.emit('pointermove', h.event(250))
+  h.frames.frame(1200)
+  assert.deepEqual(h.previews, [15])
+  ready = false
+  h.emit('pointerup', h.event(259.25))
+  assert.deepEqual(h.commits, [15.925])
+})
+
+test('playhead grab preserves pointer offset and follows horizontal scrolling', () => {
+  const h = scrubHarness({ preserveOffset: true, scrollLeft: 20 })
+  h.begin(111)
+  assert.equal(h.scrub.getTimelineScrubTime(), 3)
+  h.emit('pointermove', h.event(151))
+  h.frames.frame(0)
+  assert.equal(h.scrub.getTimelineScrubTime(), 7)
+  h.viewport.scrollLeft = 40
+  h.frames.frame(17)
+  assert.equal(h.scrub.getTimelineScrubTime(), 9)
+  h.emit('pointerup', h.event(151))
+  assert.deepEqual(h.commits, [9])
+})
+
+test('scrub cancellation restores original time and cleans up pointer, blur and unmount paths', () => {
+  for (const reason of ['keydown', 'blur', 'pointercancel', 'unmount']) {
+    const h = scrubHarness()
+    const cancel = h.begin()
+    h.emit('pointermove', h.event(200, 2))
+    h.emit('pointerup', h.event(200, 2))
+    h.emit('pointercancel', h.event(200, 2))
+    h.frames.frame(0)
+    assert.equal(h.scrub.getTimelineScrubTime(), 2)
+    h.emit('pointermove', h.event(220))
+    h.frames.frame(17)
+    if (reason === 'unmount') cancel()
+    else h.emit(reason, { key: 'Escape', pointerId: 1, preventDefault() {} })
+    assert.deepEqual(h.commits, [3])
+    assert.equal(h.scrub.getTimelineScrubTime(), null)
+    assert.equal(h.listeners.size, 0)
+    assert.equal(h.frames.pending.size, 0)
+  }
+})
+
+test('offscreen scrubbing auto-scroll is bounded and stops on release', () => {
+  const h = scrubHarness()
+  h.begin()
+  h.emit('pointermove', h.event(5000))
+  h.frames.frame(0)
+  h.frames.frame(1000)
+  assert.equal(h.viewport.scrollLeft, 30, 'Large frame gaps must not cause scroll jumps')
+  for (let index = 1; index < 100; index++) h.frames.frame(1000 + index * 17)
+  assert.ok(h.viewport.scrollLeft <= 1200)
+  h.emit('pointerup', h.event(5000))
+  assert.equal(h.frames.pending.size, 0)
+  assert.deepEqual(h.commits, [30])
+})
+
+test('audio clock ignores decoder notifications during scrubbing and deduplicates final updates', () => {
+  const scrub = loadModule('src/engine/timeline/TimelineScrubState.ts')
+  let state, listener, updates = 0, previewUpdates = 0
+  const engine = { addListener: value => { listener = value } }
+  loadModule('src/stores/audioStore.ts', {}, {
+    zustand: { create: setup => {
+      const set = value => { const next = typeof value === 'function' ? value(state) : value; if (next !== state) { state = { ...state, ...next }; updates++ } }
+      state = setup(set, () => state)
+      return state
+    } },
+    '@/engine/audio/AudioEngine': { AudioEngine: { getInstance: () => engine } },
+    './timelineStore': {}, './previewStore': { usePreviewStore: { setState: () => previewUpdates++ } },
+    '@/engine/timeline/TimelineScrubState': scrub,
+  })
+  scrub.setTimelineScrubTime(10)
+  for (let index = 0; index < 2000; index++) listener.onTimeUpdate(index / 100, 30)
+  assert.equal(updates, 0)
+  assert.equal(previewUpdates, 0)
+  scrub.setTimelineScrubTime(null)
+  listener.onTimeUpdate(15.125, 30)
+  listener.onTimeUpdate(15.125, 30)
+  assert.equal(updates, 1)
+  assert.equal(state.currentTime, 15.125)
+})
+
+function resizeHarness() {
+  const listeners = new Map(), pending = new Map(), properties = new Map()
+  let sequence = 0, paints = 0
+  const state = loadModule('src/engine/render/PanelResizeState.ts')
+  const body = { style: { cursor: 'default', userSelect: 'text' } }
+  const api = loadModule('src/components/ui/panelResize.ts', {
+    document: { body },
+    window: {
+      addEventListener: (name, callback) => listeners.set(name, callback),
+      removeEventListener: (name, callback) => { if (listeners.get(name) === callback) listeners.delete(name) },
+    },
+    requestAnimationFrame: callback => { pending.set(++sequence, callback); return sequence },
+    cancelAnimationFrame: id => pending.delete(id),
+  }, { '@/engine/render/PanelResizeState': state })
+  const event = (x, y, pointerId = 1) => ({ button: 0, isPrimary: true, clientX: x, clientY: y, pointerId, preventDefault() {} })
+  const panel = { dataset: {}, style: { setProperty: (key, value) => { properties.set(key, value); paints++ } } }
+  return { ...api, state, body, panel, listeners, pending, properties, event, get paints() { return paints },
+    emit(name, data) { listeners.get(name)?.(data) },
+    frame() { const batch = [...pending.values()]; pending.clear(); batch.forEach(callback => callback()) },
+  }
+}
+
+for (const [axis, direction, min, max] of [['x', 1, 240, 420], ['x', -1, 260, 400], ['y', -1, 160, 480]]) {
+  test(`splitter ${axis}/${direction} coalesces 2000 pointer samples and commits once`, () => {
+    const h = resizeHarness(), commits = []
+    const value = min + 20
+    const cancel = h.beginPanelResize(h.event(100, 100), h.panel, { axis, direction, value, min, max, commit: size => commits.push(size) })
+    for (let index = 0; index < 2000; index++) h.emit('pointermove', h.event(125, 125))
+    assert.equal(commits.length, 0)
+    assert.equal(h.pending.size, 1)
+    assert.equal(h.paints, 0)
+    h.frame()
+    assert.equal(h.paints, 1)
+    assert.equal(h.state.isPanelResizing(), true)
+    assert.equal(h.panel.dataset.resizing, 'true')
+    h.emit('pointerup', h.event(150, 150))
+    assert.deepEqual(commits, [h.clampPanelSize(value + 50 * direction, min, max)])
+    assert.equal(h.state.isPanelResizing(), false)
+    assert.equal(h.listeners.size, 0)
+    assert.equal(h.pending.size, 0)
+    assert.equal(h.body.style.cursor, 'default')
+    assert.equal(h.body.style.userSelect, 'text')
+    cancel()
+    assert.equal(commits.length, 1)
+  })
+}
+
+test('splitters cancel on Escape, blur, pointer cancellation and unmount, ignoring other pointers', () => {
+  for (const reason of ['keydown', 'blur', 'pointercancel', 'unmount']) {
+    const h = resizeHarness(), commits = []
+    const cancel = h.beginPanelResize(h.event(100, 100), h.panel, { axis: 'x', direction: 1, value: 280, min: 240, max: 420, commit: size => commits.push(size) })
+    h.emit('pointermove', h.event(160, 100, 2))
+    h.emit('pointerup', h.event(160, 100, 2))
+    h.emit('pointercancel', h.event(160, 100, 2))
+    assert.equal(h.state.isPanelResizing(), true)
+    assert.equal(h.pending.size, 0)
+    h.emit('pointermove', h.event(2000, 100))
+    h.frame()
+    assert.equal(h.properties.get('--panel-size'), '420px')
+    if (reason === 'unmount') cancel()
+    else h.emit(reason, { key: 'Escape', pointerId: 1, preventDefault() {} })
+    assert.deepEqual(commits, [])
+    assert.equal(h.properties.get('--panel-size'), '280px')
+    assert.equal(h.state.isPanelResizing(), false)
+    assert.equal(h.listeners.size, 0)
+    assert.equal(h.pending.size, 0)
+  }
+})
+
+test('viewport updates layout while dragging and allocates buffers only after settling', () => {
+  const state = loadModule('src/engine/render/PanelResizeState.ts')
+  const timers = new Map(), observers = []
+  let sequence = 0
+  const { observeSettledViewport } = loadModule('src/engine/render/SettledViewport.ts', {
+    setTimeout: callback => { timers.set(++sequence, callback); return sequence }, clearTimeout: id => timers.delete(id),
+    ResizeObserver: class {
+      constructor(callback) { this.callback = callback; observers.push(this) }
+      observe() {} disconnect() { this.disconnected = true }
+    },
+  }, { './PanelResizeState': state })
+  const layouts = [], buffers = []
+  const stop = observeSettledViewport({}, size => layouts.push(size), size => buffers.push(size))
+  const resize = (width, height) => observers[0].callback([{ contentRect: { width, height } }])
+  state.setPanelResizing(true)
+  for (let index = 0; index < 100; index++) resize(500 + index, 300)
+  assert.equal(layouts.length, 100)
+  assert.equal(timers.size, 0)
+  assert.equal(buffers.length, 0)
+  state.setPanelResizing(false)
+  resize(610, 310)
+  assert.equal(timers.size, 1)
+  for (const callback of timers.values()) callback()
+  timers.clear()
+  assert.equal(buffers.length, 1)
+  assert.equal(buffers[0].width, 610)
+  resize(0, 0)
+  assert.equal(layouts.length, 101)
+  resize(700, 310)
+  stop()
+  assert.equal(timers.size, 0)
+  assert.equal(observers[0].disconnected, true)
+})
+
+function thumbnailHarness() {
+  const frames = scheduler()
+  const resize = loadModule('src/engine/render/PanelResizeState.ts')
+  const observers = [], subscriptions = new Set()
+  const motion = { matches: false, addEventListener() {}, removeEventListener() {} }
+  let exporting = false
+  function target() {
+    const handlers = new Map()
+    return { handlers, contains: () => false,
+      addEventListener: (name, listener) => handlers.set(name, listener),
+      removeEventListener: (name, listener) => { if (handlers.get(name) === listener) handlers.delete(name) },
+    }
+  }
+  const canvas = () => {
+    const card = target()
+    return { width: 64, height: 44, card, closest: () => card, getContext: () => ({ drawImage() {} }) }
+  }
+  const scrub = loadModule('src/engine/timeline/TimelineScrubState.ts')
+  const api = loadModule('src/engine/render/ThumbnailPreview.ts', {
+    document: { createElement: canvas, activeElement: null },
+    window: { matchMedia: () => motion },
+    IntersectionObserver: class {
+      constructor(callback) { this.callback = callback; observers.push(this) }
+      observe() {} disconnect() { this.disconnected = true }
+    },
+  }, { './FrameScheduler': frames, './PanelResizeState': resize, '../timeline/TimelineScrubState': scrub,
+    '@/stores/exportStore': { useExportStore: { getState: () => ({ isExporting: exporting }),
+      subscribe: callback => { subscriptions.add(callback); return () => subscriptions.delete(callback) },
+    } },
+  })
+  return { ...api, frames, resize, scrub, canvas, observers, subscriptions,
+    exporting(value) { const previous = exporting; exporting = value; for (const callback of subscriptions) callback({ isExporting: value }, { isExporting: previous }) },
+  }
+}
+
+test('thumbnail snapshots paint once, reuse cache, and animate only on hover/focus', () => {
+  const h = thumbnailHarness(), renders = []
+  const canvas = h.canvas()
+  const stop = h.observeThumbnailPreview(canvas, (time, animated) => renders.push([time, animated]), 'original')
+  assert.equal(h.frames.pending.size, 0)
+  h.observers[0].callback([{ isIntersecting: true }])
+  h.frames.frame(0)
+  assert.deepEqual(renders, [[1500, false]])
+  assert.equal(h.frames.pending.size, 0)
+  canvas.card.handlers.get('pointerenter')()
+  h.frames.frame(100); h.frames.frame(200)
+  assert.deepEqual(renders.slice(1), [[100, true], [200, true]])
+  h.resize.setPanelResizing(true)
+  assert.equal(h.frames.pending.size, 0)
+  h.resize.setPanelResizing(false)
+  h.exporting(true)
+  assert.equal(h.frames.pending.size, 0)
+  h.exporting(false)
+  canvas.card.handlers.get('pointerleave')()
+  assert.equal(h.frames.pending.size, 0)
+  stop()
+  assert.equal(canvas.card.handlers.size, 0)
+  assert.equal(h.subscriptions.size, 0)
+  const second = h.observeThumbnailPreview(h.canvas(), () => { throw new Error('Cached card rendered again') }, 'original')
+  h.observers[1].callback([{ isIntersecting: true }])
+  assert.equal(h.frames.pending.size, 0)
+  second()
+})
+
+test('thumbnail snapshot cache has bounded LRU eviction', () => {
+  const h = thumbnailHarness()
+  for (let index = 0; index < 129; index++) {
+    const stop = h.observeThumbnailPreview(h.canvas(), () => {}, String(index))
+    h.observers[index].callback([{ isIntersecting: true }])
+    h.frames.frame(index * 17)
+    stop()
+  }
+  let missing = 0
+  const first = h.observeThumbnailPreview(h.canvas(), () => missing++, '0')
+  h.observers[129].callback([{ isIntersecting: true }])
+  h.frames.frame(2200)
+  assert.equal(missing, 1)
+  first()
+  const last = h.observeThumbnailPreview(h.canvas(), () => { throw new Error('Most recent snapshot was evicted') }, '128')
+  h.observers[130].callback([{ isIntersecting: true }])
+  assert.equal(h.frames.pending.size, 0)
+  last()
 })
 
 test('FFT data and smoothing are computed once per shared timestamp', () => {
@@ -350,27 +726,17 @@ test('bass settings are bounded and survive serialization with legacy bypass def
   assert.equal(JSON.stringify(normalizeBassConfig(JSON.parse(JSON.stringify(config)))), JSON.stringify(config))
 })
 
-test('bass pack adds exactly 200 unique, registered presets with non-color variation', () => {
-  const bass = loadModule('src/engine/audio/BassReactivity.ts')
-  const pack = loadModule('src/engine/visualizers/BassPresetPack.ts', {}, { '../audio/BassReactivity': bass })
-  const catalog = loadModule('src/engine/visualizers/VisualizerPresetCatalog.ts', {}, { './BassPresetPack': pack })
-  assert.equal(pack.BASS_VISUALIZER_PRESETS.length, 200)
-  assert.equal(catalog.VISUALIZER_PRESETS.length, catalog.LEGACY_VISUALIZER_PRESETS.length + 200)
+test('catalog contains only the 37 original registered presets', () => {
+  const catalog = loadModule('src/engine/visualizers/VisualizerPresetCatalog.ts')
+  assert.equal(catalog.VISUALIZER_PRESETS.length, 37)
+  assert.equal(catalog.VISUALIZER_PRESETS, catalog.LEGACY_VISUALIZER_PRESETS)
   assert.equal(new Set(catalog.VISUALIZER_PRESETS.map(preset => preset.id)).size, catalog.VISUALIZER_PRESETS.length)
-  assert.equal(new Set(pack.BASS_VISUALIZER_PRESETS.map(preset => preset.name)).size, 200)
   const plugins = fs.readdirSync(path.join(__dirname, '../src/engine/visualizers/styles')).map(filename =>
     fs.readFileSync(path.join(__dirname, '../src/engine/visualizers/styles', filename), 'utf8')).join('\n')
-  for (const preset of pack.BASS_VISUALIZER_PRESETS) {
+  for (const preset of catalog.VISUALIZER_PRESETS) {
     assert.ok(plugins.includes(`readonly id = '${preset.engineType}'`), `Unknown renderer ${preset.engineType}`)
-    assert.equal(preset.config.bassReactivity.enabled, true)
-    assert.equal(preset.config.presetId, preset.id)
-    assert.ok(preset.config.barCount >= 16 && preset.config.barCount <= 96)
+    assert.ok(!preset.tags.includes('Bass Pack'))
   }
-  const responseSignatures = pack.BASS_VISUALIZER_PRESETS.map(preset => {
-    const { primaryColor, accentColor, presetId, ...config } = preset.config
-    return JSON.stringify(config)
-  })
-  assert.equal(new Set(responseSignatures).size, 200)
 })
 
 test('category wheel scrolling handles mice, trackpads, units, boundaries, and zoom gestures', () => {

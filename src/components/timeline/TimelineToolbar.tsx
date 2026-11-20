@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useRef } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import {
   MousePointer, Scissors, Magnet, ZoomIn, ZoomOut, Maximize2,
@@ -11,6 +11,7 @@ import { TimelineEngine } from '@/engine/timeline/TimelineEngine'
 import { TimecodeUtils } from '@/engine/timeline/TimecodeUtils'
 import { TrackType } from '@/engine/timeline/types'
 import { Select } from '@/components/ui/Select'
+import { useTimelineClock } from './useTimelineClock'
 
 interface ToolButtonProps {
   label: string
@@ -30,15 +31,20 @@ const ToolButton: React.FC<ToolButtonProps> = ({ label, icon: Icon, onClick, act
   </button>
 )
 
-// Only this small timecode group subscribes to playback updates.
+// Readouts follow the transient scrub/playback clock without rerendering toolbar buttons.
 const FrameNavigation: React.FC = () => {
-  const currentTime = usePreviewStore((s) => s.currentTime)
+  const timecodeRef = useRef<HTMLSpanElement>(null)
+  useTimelineClock(time => {
+    const text = TimecodeUtils.secondsToTimecode(time, useTimelineStore.getState().fps)
+    if (timecodeRef.current && timecodeRef.current.textContent !== text) timecodeRef.current.textContent = text
+  })
   const fps = useTimelineStore((s) => s.fps)
   const stepFrame = (direction: 1 | -1) => {
     const { currentTime: time, duration } = usePreviewStore.getState()
     useAudioStore.getState().seek(TimelineEngine.getInstance().stepFrame(time, direction, duration, fps))
   }
   const jumpMarker = (direction: 1 | -1) => {
+    const currentTime = usePreviewStore.getState().currentTime
     const { markers } = useTimelineStore.getState()
     const engine = TimelineEngine.getInstance()
     const time = direction > 0 ? engine.getNextMarkerTime(currentTime, markers)
@@ -49,8 +55,8 @@ const FrameNavigation: React.FC = () => {
     <div className="flex items-center gap-0.5" data-timeline-timecode>
       <ToolButton label="Previous marker" icon={Bookmark} onClick={() => jumpMarker(-1)} />
       <ToolButton label={`Previous frame (1/${fps}s)`} icon={ChevronLeft} onClick={() => stepFrame(-1)} />
-      <span className="font-mono text-2xs text-d2-text tabular-nums px-1 min-w-[84px] text-center">
-        {TimecodeUtils.secondsToTimecode(currentTime, fps)}
+      <span ref={timecodeRef} className="font-mono text-2xs text-d2-text tabular-nums px-1 min-w-[84px] text-center">
+        {TimecodeUtils.secondsToTimecode(usePreviewStore.getState().currentTime, fps)}
       </span>
       <ToolButton label={`Next frame (1/${fps}s)`} icon={ChevronRight} onClick={() => stepFrame(1)} />
       <ToolButton label="Next marker" icon={Bookmark} onClick={() => jumpMarker(1)} />

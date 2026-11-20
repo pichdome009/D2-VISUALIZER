@@ -11,6 +11,8 @@ import { AudioEngine } from '@/engine/audio/AudioEngine'
 import { AudioBands } from '@/engine/audio/FrequencyExtractor'
 import { subscribeFrames } from '@/engine/render/FrameScheduler'
 import { useExportStore } from '@/stores/exportStore'
+import { isPanelResizing } from '@/engine/render/PanelResizeState'
+import { getTimelineScrubTime } from '@/engine/timeline/TimelineScrubState'
 
 interface LiveAudioMonitorProps {
   isOpen: boolean
@@ -51,7 +53,7 @@ export const LiveAudioMonitor: React.FC<LiveAudioMonitorProps> = ({
     const ctx = canvas?.getContext('2d')
 
     const updateFrame = (frameTimestamp: number) => {
-      if (useExportStore.getState().isExporting) return
+      if (getTimelineScrubTime() !== null || isPanelResizing() || useExportStore.getState().isExporting) return
       const frame = engine.getLiveFrameData(frameTimestamp)
       setBands(frame.bands)
       setBassEnergy(frame.bassEnergy)

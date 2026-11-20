@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react'
 import { useAudioStore } from '@/stores/audioStore'
 import { WaveformGenerator } from '@/engine/audio/WaveformGenerator'
+import { useTimelineClock } from './useTimelineClock'
 
 interface TimelineWaveformProps {
   width: number
@@ -10,10 +11,15 @@ interface TimelineWaveformProps {
 
 export const TimelineWaveform: React.FC<TimelineWaveformProps> = ({ width, startTime, duration }) => {
   const waveform = useAudioStore((s) => s.waveform)
-  const progress = useAudioStore((s) => duration > 0
-    ? Math.max(0, Math.min(1, (s.currentTime - startTime) / duration)) : 0)
   const baseRef = useRef<HTMLCanvasElement>(null)
   const playedRef = useRef<HTMLCanvasElement>(null)
+  useTimelineClock(time => {
+    const canvas = playedRef.current
+    if (!canvas) return
+    const progress = duration > 0 ? Math.max(0, Math.min(1, (time - startTime) / duration)) : 0
+    const clip = `inset(0 ${(1 - progress) * 100}% 0 0)`
+    if (canvas.style.clipPath !== clip) canvas.style.clipPath = clip
+  })
 
   useEffect(() => {
     if (!waveform) return
@@ -43,7 +49,7 @@ export const TimelineWaveform: React.FC<TimelineWaveformProps> = ({ width, start
     <div className="relative w-full h-full">
       <canvas ref={baseRef} className="absolute inset-0 w-full h-full" />
       <canvas ref={playedRef} data-waveform-progress className="absolute inset-0 w-full h-full"
-        style={{ clipPath: `inset(0 ${(1 - progress) * 100}% 0 0)` }} />
+        style={{ clipPath: 'inset(0 100% 0 0)' }} />
     </div>
   )
 }
